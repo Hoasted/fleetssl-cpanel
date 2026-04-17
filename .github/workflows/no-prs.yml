@@ -7,6 +7,7 @@ on:
 jobs:
   run:
     runs-on: ubuntu-latest
+    if: ${{ !contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association) }}
     steps:
       - uses: superbrothers/close-pull-request@v3
         with:
