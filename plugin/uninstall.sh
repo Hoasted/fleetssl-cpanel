@@ -25,6 +25,7 @@ cd $JUPITER_PLUGIN_PATH && /usr/local/cpanel/scripts/uninstall_plugin --theme ju
 cd $WHM_PLUGIN_PATH && /usr/local/cpanel/bin/unregister_appconfig letsencrypt-cpanel-whm.conf
 
 rm -f /var/cpanel/perl/Cpanel/SSL/Auto/Provider/FleetSSLProvider.pm
+rm -f /var/cpanel/perl/Cpanel/API/FleetSSL.pm
 
 rm -rf $PLUGIN_PATH $JUPITER_PLUGIN_PATH \
   /usr/local/cpanel/base/frontend/jupiter/dynamicui/dynamicui_letsencrypt-cpanel.conf \

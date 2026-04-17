@@ -18,6 +18,11 @@ fi
 mkdir -p /var/cpanel/perl/Cpanel/SSL/Auto/Provider/
 ln -sf /opt/fleetssl-cpanel/FleetSSLProvider.pm /var/cpanel/perl/Cpanel/SSL/Auto/Provider/FleetSSLProvider.pm
 
+# symlink UAPI module so endpoints are reachable via `uapi FleetSSL <fn>` and
+# /execute/FleetSSL/<fn>
+mkdir -p /var/cpanel/perl/Cpanel/API/
+ln -sf /opt/fleetssl-cpanel/FleetSSL.pm /var/cpanel/perl/Cpanel/API/FleetSSL.pm
+
 # rebuild httpconf to update new autossl provider and restart apache
 if [ $NEEDS_APACHE_RESTART -eq "1" ]; then
 	echo "Rebuilding Apache conf and restarting now ..."
