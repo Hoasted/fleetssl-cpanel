@@ -1,0 +1,135 @@
+# FleetSSL cPanel — UAPI Reference
+
+FleetSSL cPanel exposes SSL certificate management via cPanel's UAPI system.
+All endpoints require the `letsencrypt-cpanel` feature to be enabled on the account.
+
+## Invocation
+
+### Shell (as root)
+    uapi --user=USERNAME FleetSSL FUNCTION [key=value ...]
+
+### Shell (as cPanel user)
+    uapi FleetSSL FUNCTION [key=value ...]
+
+### HTTP (authenticated cPanel session)
+    GET  /execute/FleetSSL/list_certificates
+    POST /execute/FleetSSL/issue_certificate
+
+## Functions
+
+### list_certificates
+
+List all SSL certificates managed by FleetSSL for the account.
+
+- Method: GET
+- Parameters: none
+- Returns: `{ virtual_hosts: { "domain": { virtual_host, dns_identifiers, challenge_method, cert_pem, privkey_pem, issuer_pem, cpanel_cert_id, cpanel_key_id, order_url } } }`
+
+Example:
+
+    uapi --user=myuser FleetSSL list_certificates
+
+### issue_certificate
+
+Issue a new SSL certificate from Let's Encrypt and install it.
+
+- Method: POST
+- Required parameters:
+  - `virtual_host` — the cPanel virtual host to issue for (e.g. `example.com`)
+  - `dns_identifiers` — comma-separated list of domain names to include on the certificate
+  - `challenge_method` — `http-01` or `dns-01`
+- Optional parameters:
+  - `preferred_issuer_cn` — preferred certificate chain issuer (e.g. `ISRG Root X1`)
+  - `dry_run` — `1` to use Let's Encrypt staging (test run, no real cert)
+  - `key_type` — `ecdsa:p-256`, `ecdsa:p-384`, `rsa:2048`, `rsa:4096`
+- Returns: success message with installation details
+
+Example:
+
+    uapi --user=myuser FleetSSL issue_certificate \
+        virtual_host=example.com \
+        dns_identifiers=example.com,www.example.com \
+        challenge_method=http-01
+
+### remove_certificate
+
+Remove a FleetSSL-managed certificate and uninstall it from cPanel.
+
+- Method: POST
+- Required parameters:
+  - `virtual_host` — the virtual host to remove the certificate from
+- Returns: confirmation of removal
+
+Example:
+
+    uapi --user=myuser FleetSSL remove_certificate virtual_host=example.com
+
+### reinstall_certificate
+
+Reinstall an existing certificate (e.g. to switch certificate chain or refresh cPanel state).
+
+- Method: POST
+- Required parameters:
+  - `virtual_host` — the virtual host to reinstall the certificate on
+- Optional parameters:
+  - `preferred_issuer` — select an alternate certificate chain
+- Returns: confirmation of reinstallation
+
+Example:
+
+    uapi --user=myuser FleetSSL reinstall_certificate \
+        virtual_host=example.com \
+        preferred_issuer="ISRG Root X1"
+
+### reuse_certificate
+
+Install an existing certificate from one virtual host onto another.
+
+- Method: POST
+- Required parameters:
+  - `src_virtual_host` — the virtual host that has the certificate
+  - `dest_virtual_host` — the virtual host to install the certificate on
+- Returns: confirmation of reuse
+
+Example:
+
+    uapi --user=myuser FleetSSL reuse_certificate \
+        src_virtual_host=example.com \
+        dest_virtual_host=other.example.com
+
+### remove_certificate_reuse
+
+Remove a certificate reuse mapping and uninstall the certificate from the target virtual host.
+
+- Method: POST
+- Required parameters:
+  - `dest_virtual_host` — the virtual host to remove the reused certificate from
+- Returns: confirmation of removal
+
+Example:
+
+    uapi --user=myuser FleetSSL remove_certificate_reuse \
+        dest_virtual_host=other.example.com
+
+## Architecture
+
+Two execution paths exist depending on invocation context:
+
+1. **HTTP path** — when invoked via `/execute/FleetSSL/...`, cpsrvd provides a
+   liveapi socket (`CPANEL_CONNECT_SOCKET`). The UAPI module exec's the Go CGI
+   binary directly in CGI mode.
+
+2. **CLI path** — when invoked via `uapi` from the shell, no liveapi socket
+   exists. The UAPI module escalates privileges via cPanel's AdminBin system
+   (`Cpanel::AdminBin::Call`) and calls `le-cp api --user=USER --function=FUNC`,
+   which creates a WHM session and hits the CGI via HTTPS.
+
+Both paths return the same JSON response format.
+
+## Files
+
+- `/opt/fleetssl-cpanel/FleetSSL.pm` — UAPI module (Cpanel::API::FleetSSL)
+- `/opt/fleetssl-cpanel/FleetSSL-adminbin.pm` — AdminBin privilege escalation module
+- `/opt/fleetssl-cpanel/letsencrypt.live.cgi` — Go binary (CGI + CLI + daemon)
+- `/usr/local/cpanel/Cpanel/API/FleetSSL.pm` — symlink to UAPI module
+- `/var/cpanel/perl/Cpanel/Admin/Modules/FleetSSL/api.pm` — symlink to AdminBin module
