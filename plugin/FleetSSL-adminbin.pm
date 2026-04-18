@@ -21,7 +21,10 @@ my %ALLOWED_FUNCTIONS = map { $_ => 1 } qw(
 my $CGI_BINARY = '/opt/fleetssl-cpanel/letsencrypt.live.cgi';
 
 sub API_CALL {
-    my ( $self, $function, $body_json ) = @_;
+    my ( $self, $args ) = @_;
+
+    my $function  = ref $args eq 'HASH' ? $args->{'function'} : $args;
+    my $body_json = ref $args eq 'HASH' ? $args->{'body'}     : '';
 
     die "Invalid API function: $function\n"
         unless $function && $ALLOWED_FUNCTIONS{$function};
