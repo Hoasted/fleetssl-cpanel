@@ -25,7 +25,13 @@ cd $JUPITER_PLUGIN_PATH && /usr/local/cpanel/scripts/uninstall_plugin --theme ju
 cd $WHM_PLUGIN_PATH && /usr/local/cpanel/bin/unregister_appconfig letsencrypt-cpanel-whm.conf
 
 rm -f /var/cpanel/perl/Cpanel/SSL/Auto/Provider/FleetSSLProvider.pm
+rm -f /usr/local/cpanel/Cpanel/API/FleetSSL.pm
+# Clean up the old (broken) path from 0.22.0 in case it's still around.
 rm -f /var/cpanel/perl/Cpanel/API/FleetSSL.pm
+rm -f /var/cpanel/perl/Cpanel/Admin/Modules/FleetSSL/api.pm
+rm -f /usr/local/cpanel/bin/admin/FleetSSL/api.conf
+rmdir /var/cpanel/perl/Cpanel/Admin/Modules/FleetSSL 2>/dev/null
+rmdir /usr/local/cpanel/bin/admin/FleetSSL 2>/dev/null
 
 rm -rf $PLUGIN_PATH $JUPITER_PLUGIN_PATH \
   /usr/local/cpanel/base/frontend/jupiter/dynamicui/dynamicui_letsencrypt-cpanel.conf \

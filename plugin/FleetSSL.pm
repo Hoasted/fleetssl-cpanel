@@ -23,7 +23,9 @@ use IO::Select  ();
 use IPC::Open3  ();
 use POSIX       ();
 use Symbol      ();
+use Cpanel       ();
 use Cpanel::JSON ();
+use Cpanel::AdminBin::Call ();
 
 our $VERSION = '1.0';
 
@@ -124,6 +126,10 @@ sub _get_list {
 sub _invoke {
     my ( $function, $method, $body_ref, $result ) = @_;
 
+    if ( !$ENV{CPANEL_CONNECT_SOCKET} ) {
+        return _invoke_cli( $function, $body_ref, $result );
+    }
+
     my $body_json = defined($body_ref) ? Cpanel::JSON::Dump($body_ref) : '';
 
     local %ENV = %ENV;
@@ -188,6 +194,36 @@ sub _invoke {
     if ( !$decoded->{success} ) {
         my @errs = @{ $decoded->{errors} // [] };
         $result->raw_error( @errs ? join( '; ', @errs ) : "FleetSSL operation failed (exit=$status)" );
+        return 0;
+    }
+
+    $result->data( $decoded->{data} );
+    return 1;
+}
+
+sub _invoke_cli {
+    my ( $function, $body_ref, $result ) = @_;
+
+    my $body_json = defined($body_ref) ? Cpanel::JSON::Dump($body_ref) : '';
+
+    my $output = eval {
+        Cpanel::AdminBin::Call::call( 'FleetSSL', 'api', 'API_CALL', $function, $body_json );
+    };
+    if ($@) {
+        $result->raw_error("FleetSSL admin call failed: $@");
+        return 0;
+    }
+
+    my $decoded = ref($output) eq 'HASH' ? $output : eval { Cpanel::JSON::Load( $output // '' ) };
+    if ( $@ || ref($decoded) ne 'HASH' ) {
+        my $snippet = substr( $output // '', 0, 500 );
+        $result->raw_error("Failed to parse FleetSSL CLI response: $snippet");
+        return 0;
+    }
+
+    if ( !$decoded->{success} ) {
+        my @errs = @{ $decoded->{errors} // [] };
+        $result->raw_error( @errs ? join( '; ', @errs ) : 'FleetSSL operation failed' );
         return 0;
     }
 
