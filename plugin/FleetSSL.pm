@@ -220,13 +220,14 @@ sub _invoke_cli {
         return 0;
     }
 
-    my $stdout = $response->{'data'} // '';
-
-    my $decoded = eval { Cpanel::JSON::Load($stdout) };
-    if ( $@ || ref($decoded) ne 'HASH' ) {
-        my $snippet = substr( $stdout // '', 0, 500 );
-        $result->raw_error("Failed to parse FleetSSL CLI response: $snippet");
-        return 0;
+    my $decoded = $response->{'data'};
+    if ( ref($decoded) ne 'HASH' ) {
+        $decoded = eval { Cpanel::JSON::Load( $decoded // '' ) };
+        if ( $@ || ref($decoded) ne 'HASH' ) {
+            my $snippet = substr( $response->{'data'} // '', 0, 500 );
+            $result->raw_error("Failed to parse FleetSSL CLI response: $snippet");
+            return 0;
+        }
     }
 
     if ( !$decoded->{success} ) {
