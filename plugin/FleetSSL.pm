@@ -210,7 +210,7 @@ sub _invoke_cli {
         'namespace' => 'FleetSSL',
         'module'    => 'api',
         'function'  => 'API_CALL',
-        'data'      => { 'function' => $function, 'body' => $body_json },
+        'data'      => [ { 'function' => $function, 'body' => $body_json } ],
         'action'    => 'fetch',
     );
 
