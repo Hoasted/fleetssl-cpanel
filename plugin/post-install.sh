@@ -34,6 +34,9 @@ ln -sf /opt/fleetssl-cpanel/FleetSSL-adminbin.pm /var/cpanel/perl/Cpanel/Admin/M
 mkdir -p /usr/local/cpanel/bin/admin/FleetSSL
 ln -sf /opt/fleetssl-cpanel/FleetSSL-adminbin.conf /usr/local/cpanel/bin/admin/FleetSSL/api.conf
 
+# Rebuild the UAPI spec so FleetSSL appears in `uapi` help listing
+/usr/local/cpanel/scripts/verify_api_spec_files > /dev/null 2>&1
+
 # rebuild httpconf to update new autossl provider and restart apache
 if [ $NEEDS_APACHE_RESTART -eq "1" ]; then
 	echo "Rebuilding Apache conf and restarting now ..."
