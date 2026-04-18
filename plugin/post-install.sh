@@ -26,6 +26,14 @@ ln -sf /opt/fleetssl-cpanel/FleetSSL.pm /usr/local/cpanel/Cpanel/API/FleetSSL.pm
 # Clean up the old (broken) path from 0.22.0 if a previous install left it behind.
 rm -f /var/cpanel/perl/Cpanel/API/FleetSSL.pm
 
+# AdminBin module for privilege escalation (UAPI runs as user, le-cp api needs root).
+# Modern cPanel admin modules run inside cpsrvd as root — no external binary needed.
+# Custom namespaces load from $CUSTOM_PERL_MODULES_DIR (/var/cpanel/perl/).
+mkdir -p /var/cpanel/perl/Cpanel/Admin/Modules/FleetSSL
+ln -sf /opt/fleetssl-cpanel/FleetSSL-adminbin.pm /var/cpanel/perl/Cpanel/Admin/Modules/FleetSSL/api.pm
+mkdir -p /usr/local/cpanel/bin/admin/FleetSSL
+ln -sf /opt/fleetssl-cpanel/FleetSSL-adminbin.conf /usr/local/cpanel/bin/admin/FleetSSL/api.conf
+
 # rebuild httpconf to update new autossl provider and restart apache
 if [ $NEEDS_APACHE_RESTART -eq "1" ]; then
 	echo "Rebuilding Apache conf and restarting now ..."

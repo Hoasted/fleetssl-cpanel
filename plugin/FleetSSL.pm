@@ -25,6 +25,7 @@ use POSIX       ();
 use Symbol      ();
 use Cpanel       ();
 use Cpanel::JSON ();
+use Cpanel::Wrap ();
 
 our $VERSION = '1.0';
 
@@ -203,56 +204,34 @@ sub _invoke {
 sub _invoke_cli {
     my ( $function, $body_ref, $result ) = @_;
 
-    my $user = $Cpanel::user;
-    if ( !$user || !length $user ) {
-        $result->raw_error('Cannot determine cPanel username for CLI invocation');
+    my $body_json = defined($body_ref) ? Cpanel::JSON::Dump($body_ref) : '';
+
+    my $response = Cpanel::Wrap::send_cpwrapd_request(
+        'namespace' => 'FleetSSL',
+        'module'    => 'api',
+        'function'  => 'API_CALL',
+        'data'      => [ $function, $body_json ],
+        'action'    => 'fetch',
+    );
+
+    if ( !$response || $response->{'error'} ) {
+        my $msg = $response->{'statusmsg'} // 'Unknown error calling FleetSSL admin module';
+        $result->raw_error($msg);
         return 0;
     }
 
-    my @cmd = ( $CGI_BINARY, 'api', '--user', $user, '--function', $function );
-    if ( defined $body_ref ) {
-        push @cmd, Cpanel::JSON::Dump($body_ref);
-    }
-
-    my ( $cgi_in, $cgi_out );
-    my $cgi_err = Symbol::gensym();
-
-    my $pid = eval { IPC::Open3::open3( $cgi_in, $cgi_out, $cgi_err, @cmd ) };
-    if ( !$pid || $@ ) {
-        $result->raw_error( "Failed to invoke FleetSSL CLI ($CGI_BINARY): " . ( $@ || $! ) );
-        return 0;
-    }
-    close $cgi_in;
-
-    my ( $stdout, $stderr ) = ( '', '' );
-    my $sel = IO::Select->new( $cgi_out, $cgi_err );
-    while ( my @ready = $sel->can_read ) {
-        for my $fh (@ready) {
-            my $buf = '';
-            my $n   = sysread( $fh, $buf, 65536 );
-            if ( !defined $n || $n == 0 ) {
-                $sel->remove($fh);
-                close $fh;
-                next;
-            }
-            if ( $fh == $cgi_out ) { $stdout .= $buf }
-            else                   { $stderr .= $buf }
-        }
-    }
-
-    waitpid $pid, 0;
-    my $status = $? >> 8;
+    my $stdout = $response->{'data'} // '';
 
     my $decoded = eval { Cpanel::JSON::Load($stdout) };
     if ( $@ || ref($decoded) ne 'HASH' ) {
         my $snippet = substr( $stdout // '', 0, 500 );
-        $result->raw_error("Failed to parse FleetSSL CLI response (exit=$status): $snippet");
+        $result->raw_error("Failed to parse FleetSSL CLI response: $snippet");
         return 0;
     }
 
     if ( !$decoded->{success} ) {
         my @errs = @{ $decoded->{errors} // [] };
-        $result->raw_error( @errs ? join( '; ', @errs ) : "FleetSSL operation failed (exit=$status)" );
+        $result->raw_error( @errs ? join( '; ', @errs ) : 'FleetSSL operation failed' );
         return 0;
     }
 
