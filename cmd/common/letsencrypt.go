@@ -3,7 +3,6 @@ package common
 import (
 	"context"
 	"crypto/x509"
-	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -229,7 +228,7 @@ func RequestCert(certReq CertificateRequest) (*NVDataDomainCerts, error) {
 			zone, err := certReq.CpanelAPI.FetchZone(zoneToEdit, "TXT")
 			if err != nil {
 				log.WithError(err).Error("Couldn't fetch zone")
-				return nil, errors.New("Failed to find the DNS zone in cPanel")
+				return nil, fmt.Errorf("Failed to find the DNS zone in cPanel for %s: %v", currentAuth.Identifier.Value, err)
 			}
 
 			fullAcmeFqdn := "_acme-challenge." + currentAuth.Identifier.Value + "."
@@ -253,12 +252,12 @@ func RequestCert(certReq CertificateRequest) (*NVDataDomainCerts, error) {
 				}).Info("Found a line to update")
 				if err := certReq.CpanelAPI.EditZoneTextRecord(existing[existingLineCount[fullAcmeFqdn]], zoneToEdit, txt, "1"); err != nil {
 					log.WithError(err).Error("Failed to modify txt record")
-					return nil, errors.New("Could not modify TXT record")
+					return nil, fmt.Errorf("Could not modify TXT record for %s: %v", currentAuth.Identifier.Value, err)
 				}
 			} else {
 				if err := certReq.CpanelAPI.AddZoneTextRecord(zoneToEdit, fullAcmeFqdn, txt, "1"); err != nil {
 					log.WithError(err).Error("Failed to add txt record")
-					return nil, errors.New("Could not add TXT record")
+					return nil, fmt.Errorf("Could not add TXT record for %s: %v", currentAuth.Identifier.Value, err)
 				}
 			}
 			// Increment the lines used count for both adding and modifying lines,
