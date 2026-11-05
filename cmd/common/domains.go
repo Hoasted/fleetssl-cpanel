@@ -192,7 +192,9 @@ func GroupNVDataDomains(certs map[string]*NVDataDomainCerts, allDomains DomainLi
 	var leftovers []string
 
 	for root, cert := range certs {
-		list, lo, err := GroupDomains(append(cert.AltNames, cert.Domain), allDomains, root)
+		names := append([]string{cert.Domain}, cert.AltNames...)
+		names = append(names, cert.RenewalNames...)
+		list, lo, err := GroupDomains(names, allDomains, root)
 		if err != nil {
 			return grouped, leftovers, err
 		}

@@ -562,6 +562,13 @@ func processRenewalForAccountDomain(root, username string, group common.DomainLi
 			errors.New("Unable to determine document root for this domain - please re-issue certificate from web interface")
 	}
 
+	toIssue, checkErr := prepareRenewalCertificate(existingCert, group, func(entry common.DomainEntry) error {
+		return common.IsDomainAccessible(username, entry, cp)
+	})
+	if checkErr != nil {
+		return existingCert, ResultRenewalFail, checkErr
+	}
+
 	var newCert *common.NVDataDomainCerts
 
 	// If we already have a valid certificate for this domain, and it's being renewed for some reason,
@@ -573,7 +580,8 @@ func processRenewalForAccountDomain(root, username string, group common.DomainLi
 		// 2. The certificate must not be revoked
 		isRevoked, _ := isCertificateRevokedOCSP(existingCert.DomainCert, existingCert.IssuerCert)
 
-		if hasEnoughValidity && !isRevoked {
+		coversNames := certificateCoversNames(existingCert.DomainCert, append([]string{toIssue.Domain}, toIssue.AltNames...))
+		if hasEnoughValidity && !isRevoked && coversNames {
 			log.WithField("domain", root).Info("Re-using existing certificate in storage, not renewing")
 			newCert = existingCert
 		}
@@ -581,10 +589,11 @@ func processRenewalForAccountDomain(root, username string, group common.DomainLi
 
 	// get the new renewed certificate
 	if newCert == nil {
-		newCert, err = getRenewedCert(existingCert, data.AccountKey, username, docroot, cp, dryRun)
+		newCert, err = getRenewedCert(toIssue, data.AccountKey, username, docroot, cp, dryRun)
 		if err != nil {
 			return existingCert, ResultRenewalFail, fmt.Errorf("Unable to renew certificate: %v", err)
 		}
+		newCert.RenewalNames = toIssue.RenewalNames
 	}
 
 	// During a dry-run, we don't want to install or do the other remainder of tasks
@@ -625,6 +634,40 @@ func processRenewalForAccountDomain(root, username string, group common.DomainLi
 	return newCert, result, nil
 }
 
+func certificateCoversNames(certPEM string, names []string) bool {
+	cert, err := common.DecodeToCert(certPEM)
+	return err == nil && common.ArrayProperSubset(names, cert.DNSNames)
+}
+
+// Keep the requested names separate from the names that currently pass HTTP DCV.
+func prepareRenewalCertificate(cert *common.NVDataDomainCerts, group common.DomainList,
+	check func(common.DomainEntry) error) (*common.NVDataDomainCerts, error) {
+	toIssue := *cert
+	if cert.ChallengeMethod == "dns-01" {
+		return &toIssue, nil
+	}
+	root, ok := group[cert.Domain]
+	if !ok {
+		return nil, fmt.Errorf("Primary domain %s is missing from the renewal group", cert.Domain)
+	}
+	if err := check(root); err != nil {
+		return nil, fmt.Errorf("Primary domain %s failed DCV: %v", cert.Domain, err)
+	}
+	toIssue.AltNames = nil
+	toIssue.RenewalNames = group.GatherNames()
+	for name, entry := range group {
+		if name == cert.Domain {
+			continue
+		}
+		if err := check(entry); err != nil {
+			log.WithField("domain", name).WithError(err).Info("Omitting name from renewal because HTTP DCV failed")
+			continue
+		}
+		toIssue.AltNames = append(toIssue.AltNames, name)
+	}
+	return &toIssue, nil
+}
+
 func getExistingCertificateFromNVData(root string, group common.DomainList, data *common.NVDataAccount) (*common.NVDataDomainCerts, error) {
 	existingCert, ok := data.Certs[root]
 	// We may need to create the map entry from scratch
@@ -643,9 +686,12 @@ func getExistingCertificateFromNVData(root string, group common.DomainList, data
 			DomainKey: key.AsPEM(),
 		}
 	}
-	// Always set AltNames
-	existingCert.AltNames = group.GatherNames()
-	return existingCert, nil
+	// Work on a copy so failed renewals cannot change the saved certificate names.
+	toRenew := *existingCert
+	if toRenew.ChallengeMethod == "dns-01" {
+		toRenew.AltNames = group.GatherNames()
+	}
+	return &toRenew, nil
 }
 
 func getRenewedCert(certData *common.NVDataDomainCerts, accountKeyPem, username, docroot string, cp cpanel.CpanelApi, dryRun bool) (*common.NVDataDomainCerts, error) {
