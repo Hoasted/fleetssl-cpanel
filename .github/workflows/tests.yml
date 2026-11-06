@@ -1,0 +1,31 @@
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test and build (Linux amd64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Run application tests and compile the plugin
+        run: |
+          docker run --rm \
+            -v "$PWD:/src" -w /src \
+            golang:1.20.14-alpine@sha256:e47f121850f4e276b2b210c56df3fda9191278dd84a3a442bfe0b09934462a8f \
+            sh -c 'go test -count=1 ./cmd/... && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /tmp/fleetssl-test cmd/letsencrypt.go'

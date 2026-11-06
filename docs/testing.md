@@ -71,6 +71,12 @@ This pins the repository's older toolchain for reproducibility; it is not a reco
 
 Known static-analysis finding: `cmd/daemon/daemon.go` passes an unbuffered signal channel to `signal.Notify`. Report this separately from test/build results until it is fixed; do not describe the entire check suite as passing when vet fails.
 
+## GitHub Actions
+
+`.github/workflows/tests.yml` runs application tests and a Linux amd64 compile on pull requests, pushes to `main`, and manual dispatch. It uses the same pinned Go Docker image and commands shown above, with a read-only repository token and no cPanel or ACME credentials.
+
+The manually dispatched release workflow calls that same test workflow and waits for it to succeed before packaging and publishing. Its existing RPM/DEB build commands and asset names remain separate from the tests. For a new release, choose an unused `VERSION`/`ITERATION` combination before dispatch: a new tag targets the tested commit, but an existing tag is not moved. A green test job does not prove a package installs or that real ACME validation works. Static analysis remains a separate local check while the signal-channel finding above is unresolved.
+
 ## Integration and acceptance tests
 
 Choose the smallest environment that exercises the changed boundary:
