@@ -13,8 +13,12 @@ import (
 	"github.com/letsencrypt-cpanel/cpanelgo"
 	"github.com/letsencrypt-cpanel/cpanelgo/cpanel"
 	"math/big"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"sort"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -232,7 +236,7 @@ func TestReusedCertificateCleanup(t *testing.T) {
 			group.AddDomain(root, "Main", "/public_html", "test", root)
 			gateway := &renewalGateway{certID: tc.newCert, keyID: tc.newKey}
 			cp := cpanel.CpanelApi{Api: cpanelgo.NewApi(gateway)}
-			resultCert, result, err := processRenewalForAccountDomain(root, "test", group, data, cp, false, false)
+			resultCert, result, err := processRenewalForAccountDomain(root, "test", group, data, cp, false, false, cpanel.InstalledHostsApiResponse{})
 			if err != nil || result != ResultRenewalReinstall {
 				t.Fatalf("result=%v err=%v", result, err)
 			}
@@ -268,6 +272,128 @@ func TestCertificateCoversWildcardRenewalNames(t *testing.T) {
 			}
 			if got := certificateCoversNames(pem, tc.names); got != tc.want {
 				t.Fatalf("coverage=%v want=%v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestInstalledCertificateSkipsRepeatedInstallation(t *testing.T) {
+	const root = "example.test"
+	cert := &common.NVDataDomainCerts{Domain: root, DomainCert: renewalTestCertificate(t, []string{root}), CertExpiry: time.Now().Add(365 * 24 * time.Hour).Unix(), ChallengeMethod: "dns-01"}
+	group := common.DomainList{}
+	group.AddDomain(root, "Main", "/public_html", "test", root)
+	hosts := cpanel.InstalledHostsApiResponse{Data: []cpanel.InstalledCertificate{{CertificateText: cert.DomainCert, FQDNs: []string{root}}}}
+	data := &common.NVDataAccount{Certs: map[string]*common.NVDataDomainCerts{root: cert}}
+	gateway := &renewalGateway{}
+	cp := cpanel.CpanelApi{Api: cpanelgo.NewApi(gateway)}
+	for i := 0; i < 2; i++ {
+		_, result, err := processRenewalForAccountDomain(root, "test", group, data, cp, false, false, hosts)
+		if err != nil || result != ResultRenewalUnchanged {
+			t.Fatalf("run %d: result=%v err=%v", i, result, err)
+		}
+	}
+	if len(gateway.calls) != 0 {
+		t.Fatalf("unexpected cPanel calls: %v", gateway.calls)
+	}
+	// A missing reuse target still needs installation even if the source is installed.
+	data.Reuses = map[string]string{"reuse.test": root}
+	_, result, err := processRenewalForAccountDomain(root, "test", group, data, cp, false, false, hosts)
+	if err != nil || result != ResultRenewalReinstall {
+		t.Fatalf("missing reuse: result=%v err=%v", result, err)
+	}
+	if !reflect.DeepEqual(gateway.calls, []string{"install_ssl", "install_ssl"}) {
+		t.Fatalf("reuse calls=%v", gateway.calls)
+	}
+}
+
+func TestInstalledCertificateRequiresEveryTarget(t *testing.T) {
+	cert := renewalTestCertificate(t, []string{"example.test"})
+	hosts := cpanel.InstalledHostsApiResponse{Data: []cpanel.InstalledCertificate{{CertificateText: cert, FQDNs: []string{"example.test", "alias.test"}}}}
+	for _, tc := range []struct {
+		name, pem string
+		domains   []string
+		want      bool
+	}{
+		{"source installed", cert, []string{"example.test"}, true},
+		{"case insensitive target", cert, []string{"EXAMPLE.TEST"}, true},
+		{"all targets installed", cert, []string{"example.test", "alias.test"}, true},
+		{"missing source", cert, []string{"missing.test"}, false},
+		{"missing reuse target", cert, []string{"example.test", "missing.test"}, false},
+		{"different installed certificate", renewalTestCertificate(t, []string{"example.test"}), []string{"example.test"}, false},
+		{"invalid certificate", "invalid PEM", []string{"example.test"}, false},
+		{"PEM line endings", strings.ReplaceAll(cert, "\n", "\r\n"), []string{"example.test"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := certificateInstalledForDomains(tc.pem, tc.domains, hosts); got != tc.want {
+				t.Fatalf("installed=%v want=%v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestInstalledCertificateRejectsIncompleteHostData(t *testing.T) {
+	cert := renewalTestCertificate(t, []string{"example.test"})
+	for _, host := range []cpanel.InstalledCertificate{
+		{CertificateText: cert},
+		{CertificateText: "invalid PEM", FQDNs: []string{"example.test"}},
+		{CertificateText: cert, FQDNs: []string{"other.test"}},
+	} {
+		hosts := cpanel.InstalledHostsApiResponse{Data: []cpanel.InstalledCertificate{host}}
+		if certificateInstalledForDomains(cert, []string{"example.test"}, hosts) {
+			t.Fatal("incomplete host data must not suppress reinstall")
+		}
+	}
+}
+
+func TestUnchangedCertificateDoesNotSuppressRequiredIssuance(t *testing.T) {
+	savedURL, savedStaging := common.BoulderUrl, common.BoulderStagingUrl
+	defer func() { common.BoulderUrl, common.BoulderStagingUrl = savedURL, savedStaging }()
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		// Stop issuance at the directory request; no real ACME account or order is created.
+		http.Error(w, "test ACME endpoint", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	common.BoulderUrl, common.BoulderStagingUrl = server.URL, server.URL
+	for _, tc := range []struct {
+		name                            string
+		force, dry, recovered, expiring bool
+		wantRequests                    int
+	}{
+		{name: "unchanged"},
+		{name: "recovered name", recovered: true, wantRequests: 1},
+		{name: "forced renewal", force: true, wantRequests: 1},
+		{name: "dry run", dry: true, wantRequests: 1},
+		{name: "expiring certificate", expiring: true, wantRequests: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			requests.Store(0)
+			root := "example.test"
+			cert := &common.NVDataDomainCerts{Domain: root, DomainCert: renewalTestCertificate(t, []string{root}), CertExpiry: time.Now().Add(365 * 24 * time.Hour).Unix(), ChallengeMethod: "dns-01"}
+			if tc.expiring {
+				cert.CertExpiry = time.Now().Unix()
+			}
+			group := common.DomainList{}
+			group.AddDomain(root, "Main", "/public_html", "test", root)
+			if tc.recovered {
+				group.AddDomain("mail.example.test", "Alias", "/public_html", "test", root)
+			}
+			data := &common.NVDataAccount{Certs: map[string]*common.NVDataDomainCerts{root: cert}}
+			hosts := cpanel.InstalledHostsApiResponse{Data: []cpanel.InstalledCertificate{{CertificateText: cert.DomainCert, FQDNs: []string{root}}}}
+			gateway := &renewalGateway{}
+			_, result, err := processRenewalForAccountDomain(root, "test", group, data, cpanel.CpanelApi{Api: cpanelgo.NewApi(gateway)}, tc.dry, tc.force, hosts)
+			if requests.Load() != int64(tc.wantRequests) {
+				t.Fatalf("ACME directory requests=%d want=%d", requests.Load(), tc.wantRequests)
+			}
+			if tc.wantRequests == 0 && (err != nil || result != ResultRenewalUnchanged) {
+				t.Fatalf("result=%v err=%v", result, err)
+			}
+			if tc.wantRequests > 0 && (err == nil || result != ResultRenewalFail) {
+				t.Fatalf("expected local endpoint rejection; result=%v err=%v", result, err)
+			}
+			if len(gateway.calls) > 0 {
+				t.Fatalf("unexpected cPanel calls: %v", gateway.calls)
 			}
 		})
 	}

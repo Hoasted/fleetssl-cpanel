@@ -28,7 +28,7 @@ Use a disposable cPanel VM/account, controlled public DNS and a test domain. Thi
 4. Repeat without `--dry-run`, adding `--force`, **only on the staging-configured lab daemon**. This installs a staging certificate, changes NVData, removes the old cPanel certificate/key and can restart Apache/send configured notifications. Inspect the installed certificate SANs: root/webmail remain, failed names are absent. NVData `renewal_names` must retain all eligible original candidates while `alt_names` records issued names.
 5. Repeat with the root failing DCV. Expect renewal failure before ACME issuance; the previously installed certificate and saved names must remain intact.
 6. Restore mail and the other skipped names. Run an ordinary scoped renewal (no force/dry-run) while the staging certificate still has plenty of validity. Confirm missing SANs trigger issuance despite the certificate reuse shortcut, the SANs return and NVData survives a daemon restart. Also verify the scheduled renewal loop on the lab; it uses the same per-account path.
-7. Keep a name failing across two ordinary runs. Verify no repeated ACME issuance while the valid stored certificate covers all passing names. Existing renewal reporting/reinstallation may still occur because the candidate group includes the failed name.
+7. Keep a name failing across two ordinary runs. Verify no repeated ACME issuance while the valid stored certificate covers all passing names. If the same certificate is already installed on the root and every reuse target, verify there are no install/delete calls, restart requests, renewal hooks, renewal reports or success mail. Remove a reuse target installation and verify reinstall still occurs.
 8. Recheck the DNS-01/wildcard fixture: no HTTP preflight is added, and its existing DNS challenge flow still works. Explicitly reissuing a certificate replaces the requested selection; names never selected or already removed by earlier versions are not discovered by the new candidate field.
 
 A dry-run alone cannot verify persistence or installation. Certificate reuse, privilege-dropped probe file creation, actual cPanel API behavior and proxy routing need the lab checks above. No server, DNS, RPM, Ansible, or Linear mutation is part of the local preparation.
@@ -50,3 +50,15 @@ RPM packaging additionally needs Ruby/fpm, rpm tooling, gawk and dos2unix. `make
 - `git diff --check`: passed.
 - Environment: official `golang:1.20.14-alpine` image, digest `sha256:e47f121850f4e276b2b210c56df3fda9191278dd84a3a442bfe0b09934462a8f`. No host Go installation or new Go dependencies.
 - No live cPanel/ACME test, RPM build, Ansible update, deployment, push, PR or Linear write was performed.
+
+
+## Local follow-up checks (2026-11-06)
+
+- Cleanup captures old certificate/key IDs before installation and deletes only IDs that differ from the returned installed IDs. Fake cPanel gateway tests cover changed, unchanged, partially unchanged and empty old IDs through the real renewal reuse path.
+- Certificate coverage removes wildcard-overlapped candidates using the existing issuance helper. Tests cover overlap, deeper names, other domains and the apex.
+- Already-installed certificates produce an unchanged result when the identical decoded leaf is present on the root and every reuse target, using the existing unrevoked installed-host snapshot. The caller skips renewal hooks, reports, mail and certificate saving for that result. Missing/malformed host data falls back to installation.
+- Repeated-run tests exercise the real per-domain renewal function with a fake cPanel gateway and no ACME credentials. Missing reuse targets still get installation; coverage tests still reject recovered names missing from the old certificate.
+- DNS-01 propagation behavior is unchanged. Checking the last record can be a useful proxy when updates propagate together; it is not evidence that every challenge record is visible.
+
+- A loopback-only fake ACME endpoint verifies the unchanged case makes no directory request, while a recovered name, forced renewal, dry-run and expiry still enter issuance. The endpoint deliberately rejects at directory discovery; this does not test a completed ACME order.
+- Final command-package tests and Linux amd64 build passed after all three fixes. The existing signal-channel vet finding remains outside this change.

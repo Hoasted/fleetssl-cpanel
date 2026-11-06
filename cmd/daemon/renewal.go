@@ -34,6 +34,7 @@ const (
 	ResultRenewalSuccess = iota
 	ResultRenewalFail
 	ResultRenewalReinstall
+	ResultRenewalUnchanged
 )
 
 type RenewalResult int
@@ -402,7 +403,7 @@ func processRenewalsForAccount(whmCl whm.WhmApi, username string, forceRenewals,
 		}
 
 		// process the renewal for the domain on the account
-		cert, result, err := processRenewalForAccountDomain(root, username, group, data, cp, dryRun, forceRenewals)
+		cert, result, err := processRenewalForAccountDomain(root, username, group, data, cp, dryRun, forceRenewals, sslHostsUnrevoked)
 
 		if !dryRun {
 			// If no error was experienced, then we write a fresh RAS
@@ -424,6 +425,11 @@ func processRenewalsForAccount(whmCl whm.WhmApi, username string, forceRenewals,
 
 		if cert == nil {
 			dl.Warn("cert was nil after processRenewalForAccountDomain. This SHOULD NOT HAPPEN. CONTACT SUPPORT")
+			continue
+		}
+
+		if err == nil && result == ResultRenewalUnchanged {
+			dl.Debug("Certificate already installed on all targets; no renewal or reinstall needed")
 			continue
 		}
 
@@ -545,7 +551,7 @@ func processRenewalsForAccount(whmCl whm.WhmApi, username string, forceRenewals,
 // returns newcert on success, existingcert on failure
 func processRenewalForAccountDomain(root, username string, group common.DomainList,
 	data *common.NVDataAccount, cp cpanel.CpanelApi,
-	dryRun, forceRenewals bool) (*common.NVDataDomainCerts, RenewalResult, error) {
+	dryRun, forceRenewals bool, installedHosts cpanel.InstalledHostsApiResponse) (*common.NVDataDomainCerts, RenewalResult, error) {
 	// get/create existing cert from nvdata
 	existingCert, err := getExistingCertificateFromNVData(root, group, data)
 	if err != nil {
@@ -584,6 +590,10 @@ func processRenewalForAccountDomain(root, username string, group common.DomainLi
 		if hasEnoughValidity && !isRevoked && coversNames {
 			log.WithField("domain", root).Info("Re-using existing certificate in storage, not renewing")
 			newCert = existingCert
+			targets := append([]string{root}, data.GetReuseTargetsForSource(root)...)
+			if certificateInstalledForDomains(existingCert.DomainCert, targets, installedHosts) {
+				return existingCert, ResultRenewalUnchanged, nil
+			}
 		}
 	}
 
@@ -634,6 +644,32 @@ func processRenewalForAccountDomain(root, username string, group common.DomainLi
 	}
 
 	return newCert, result, nil
+}
+
+// Only skip installation when this exact certificate is already on every target vhost.
+func certificateInstalledForDomains(certPEM string, domains []string, hosts cpanel.InstalledHostsApiResponse) bool {
+	cert, err := common.DecodeToCert(certPEM)
+	if err != nil {
+		return false
+	}
+	for _, domain := range domains {
+		found := false
+		for _, host := range hosts.Data {
+			installed, err := common.DecodeToCert(host.CertificateText)
+			if err != nil || !bytes.Equal(installed.Raw, cert.Raw) {
+				continue
+			}
+			for _, fqdn := range host.FQDNs {
+				if common.NormalizeDomain(fqdn) == common.NormalizeDomain(domain) {
+					found = true
+				}
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
 }
 
 func certificateCoversNames(certPEM string, names []string) bool {
