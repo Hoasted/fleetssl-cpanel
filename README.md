@@ -4,3 +4,6 @@ If you are an existing customer, please [reach out to us](https://cpanel.fleetss
 
 See the [releases page](https://github.com/fleetssl/fleetssl-cpanel/releases) for `.rpm` and `.deb` packages of the plugin which may be installed on WHM/cPanel servers, if desired. No technical support is available for these packages.
 
+## Testing
+
+See [the testing guide](docs/testing.md) for test placement and structure, local commands, and cPanel acceptance testing.
