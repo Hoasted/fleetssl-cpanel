@@ -77,7 +77,9 @@ Known static-analysis finding: `cmd/daemon/daemon.go` passes an unbuffered signa
 
 ## GitHub Actions
 
-`.github/workflows/tests.yml` runs application tests and a Linux amd64 compile on pull requests, pushes to `main`, and manual dispatch. It uses the same pinned Go Docker image and commands shown above, with a read-only repository token and no cPanel or ACME credentials.
+`.github/workflows/tests.yml` runs application tests and a Linux amd64 compile on pull requests from repository/organization owners, members and collaborators, pushes to `main`, and manual dispatch. The test job uses the same pinned Go Docker image and commands shown above, with a read-only repository token and no cPanel or ACME credentials.
+
+External pull requests are closed by `no-prs.yml` and do not run the test job. The closing workflow uses `pull_request_target` with only pull-request write permission and never checks out or executes PR code.
 
 The manually dispatched release workflow calls that same test workflow and waits for it to succeed before packaging and publishing. Its existing RPM/DEB build commands and asset names remain separate from the tests. For a new release, choose an unused `VERSION`/`ITERATION` combination before dispatch: a new tag targets the tested commit, but an existing tag is not moved. A green test job does not prove a package installs or that real ACME validation works. Static analysis remains a separate local check while the signal-channel finding above is unresolved.
 
