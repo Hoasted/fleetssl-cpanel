@@ -638,7 +638,7 @@ func processRenewalForAccountDomain(root, username string, group common.DomainLi
 
 func certificateCoversNames(certPEM string, names []string) bool {
 	cert, err := common.DecodeToCert(certPEM)
-	return err == nil && common.ArrayProperSubset(names, cert.DNSNames)
+	return err == nil && common.ArrayProperSubset(common.StripWildcardOverlaps(names), cert.DNSNames)
 }
 
 // Keep the requested names separate from the names that currently pass HTTP DCV.

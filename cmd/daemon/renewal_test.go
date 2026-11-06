@@ -248,3 +248,27 @@ func TestReusedCertificateCleanup(t *testing.T) {
 		})
 	}
 }
+
+func TestCertificateCoversWildcardRenewalNames(t *testing.T) {
+	certPEM := renewalTestCertificate(t, []string{"example.test", "*.example.test"})
+	for _, tc := range []struct {
+		name  string
+		names []string
+		want  bool
+	}{
+		{"overlapping explicit name", []string{"example.test", "*.example.test", "mail.example.test"}, true},
+		{"wildcard does not cover deeper name", []string{"example.test", "*.example.test", "deep.mail.example.test"}, false},
+		{"wildcard does not cover other domain", []string{"example.test", "*.example.test", "other.test"}, false},
+		{"wildcard does not cover apex", []string{"example.test", "*.example.test"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pem := certPEM
+			if tc.name == "wildcard does not cover apex" {
+				pem = renewalTestCertificate(t, []string{"*.example.test"})
+			}
+			if got := certificateCoversNames(pem, tc.names); got != tc.want {
+				t.Fatalf("coverage=%v want=%v", got, tc.want)
+			}
+		})
+	}
+}
