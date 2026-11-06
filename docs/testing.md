@@ -8,6 +8,7 @@ Keep Go tests beside the code they exercise, in files named `<subject>_test.go`:
 | --- | --- |
 | `cmd/common/*_test.go` | Shared domain, certificate and ACME helpers |
 | `cmd/daemon/*_test.go` | Renewal decisions, account state, cPanel calls and daemon behavior |
+| `cmd/clapi/*_test.go` | CLI arguments and RPC success/error handling |
 | `cmd/cgi/cpanelcgi/*_test.go` | cPanel UI actions and request handling |
 | `cmd/cgi/*_test.go` | CGI entry points and shared CGI behavior |
 
@@ -33,6 +34,7 @@ Useful existing examples in `cmd/daemon/renewal_test.go`:
 - `TestRenewalEligibilityIgnoresOmittedNames`: verify omitted candidates do not schedule renewal, while expiring or missing issued names still do.
 - `TestHealthyHTTPRenewalDoesNotProbeOmittedNames`: verify healthy certificates and installation repairs avoid HTTP probes.
 - `TestUnchangedCertificateDoesNotSuppressRequiredIssuance`: use a loopback HTTP server to distinguish skipping issuance from entering it.
+- `TestRenewalDryRunRequiresEveryCandidate`: verify dry-run rejects failing primary, optional and remembered names without changing saved state. `cmd/clapi/ssl_test.go` checks that renewal errors reach the CLI caller.
 
 Use `t.Helper()` for fixture builders, `t.TempDir()` for new temporary-file fixtures, and `t.Cleanup()` to restore changed state. Existing tests change package globals such as configuration, database handles and ACME URLs; restore them and do not use `t.Parallel()` around shared state.
 
@@ -116,6 +118,8 @@ le-cp ssl --user LABUSER renew --virtualhost PUBLIC_TEST_DOMAIN --force
 # Exercise normal eligibility, reuse and recovery decisions.
 le-cp ssl --user LABUSER renew --virtualhost PUBLIC_TEST_DOMAIN
 ```
+
+Renewal dry-run is strict: every current candidate, including remembered omissions, must validate. A failing optional name fails the test instead of being silently removed. The command returns an error on the first failed virtual host; real renewals can still omit failing optional names. Existing UI/UAPI issuance responses and success text are unchanged.
 
 Dry-run still contacts cPanel/ACME and creates temporary challenge files; DNS-01 can update TXT records. It is not an offline or side-effect-free test. It also bypasses normal renewal eligibility, so it cannot establish that ordinary repeated runs avoid issuance or reinstallation.
 

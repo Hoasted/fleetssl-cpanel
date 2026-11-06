@@ -81,7 +81,7 @@ func TestPrepareRenewalCertificate(t *testing.T) {
 			cert := *original
 			cert.ChallengeMethod = method
 			checks := 0
-			prepared, err := prepareRenewalCertificate(&cert, group, func(entry common.DomainEntry) error {
+			prepared, err := prepareRenewalCertificate(&cert, group, false, func(entry common.DomainEntry) error {
 				checks++
 				if entry.Domain == "mail.example.test" || entry.Domain == "autodiscover.example.test" || entry.Domain == "www.example.test" || entry.Domain == "alias.test" {
 					return errors.New("DCV failed")
@@ -116,7 +116,7 @@ func TestPrepareRenewalCertificate(t *testing.T) {
 			if err != nil || len(leftovers) != 0 {
 				t.Fatalf("grouping: %v %v", leftovers, err)
 			}
-			restored, err := prepareRenewalCertificate(&stored, grouped[root], func(common.DomainEntry) error { return nil })
+			restored, err := prepareRenewalCertificate(&stored, grouped[root], false, func(common.DomainEntry) error { return nil })
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -135,7 +135,7 @@ func TestPrepareRenewalCertificate(t *testing.T) {
 				rootGroup[root] = group[root]
 			}
 			checks := 0
-			_, err := prepareRenewalCertificate(original, rootGroup, func(common.DomainEntry) error { checks++; return errors.New("root failed") })
+			_, err := prepareRenewalCertificate(original, rootGroup, false, func(common.DomainEntry) error { checks++; return errors.New("root failed") })
 			if err == nil || checks > 1 {
 				t.Fatalf("root failure: err=%v checks=%d", err, checks)
 			}
@@ -513,5 +513,66 @@ func TestRenewalEligibilityIgnoresOmittedNames(t *testing.T) {
 	host.Certificate.NotAfter = cpanelgo.MaybeInt64(now.Add(90 * 24 * time.Hour).Unix())
 	if renewalRequired(cert, grouped[cert.Domain], cpanel.InstalledHostsApiResponse{Data: []cpanel.InstalledCertificate{host}}, cutoff) {
 		t.Fatal("removed alias or remembered name triggered renewal")
+	}
+}
+
+func TestRenewalDryRunRequiresEveryCandidate(t *testing.T) {
+	const root = "example.test"
+	cert := &common.NVDataDomainCerts{Domain: root, AltNames: []string{"www.example.test"}, RenewalNames: []string{"mail.example.test", "removed.test"}}
+	raw, err := json.Marshal(cert)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored common.NVDataDomainCerts
+	if err := json.Unmarshal(raw, &restored); err != nil {
+		t.Fatal(err)
+	}
+	domains := common.DomainList{}
+	for _, name := range []string{root, "www.example.test", "mail.example.test"} {
+		domains.AddDomain(name, "Alias", "/public_html", "test", root)
+	}
+	grouped, _, err := common.GroupNVDataDomains(map[string]*common.NVDataDomainCerts{root: &restored}, domains)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, failing := range []string{root, "www.example.test", "mail.example.test", ""} {
+		name := failing
+		if name == "" {
+			name = "all pass"
+		}
+		t.Run(name, func(t *testing.T) {
+			calls := map[string]bool{}
+			prepared, err := prepareRenewalCertificate(&restored, grouped[root], true, func(entry common.DomainEntry) error {
+				calls[entry.Domain] = true
+				if entry.Domain == failing {
+					return errors.New("test validation failure")
+				}
+				return nil
+			})
+			if failing != "" {
+				if err == nil || !strings.Contains(err.Error(), failing) || prepared != nil {
+					t.Fatalf("dry-run silently omitted %s: prepared=%v err=%v", failing, prepared, err)
+				}
+			} else {
+				if err != nil {
+					t.Fatal(err)
+				}
+				got := append([]string{prepared.Domain}, prepared.AltNames...)
+				sort.Strings(got)
+				if !reflect.DeepEqual(got, []string{root, "mail.example.test", "www.example.test"}) {
+					t.Fatalf("requested names=%v", got)
+				}
+				if len(calls) != 3 {
+					t.Fatalf("checked names=%v", calls)
+				}
+			}
+			if calls["removed.test"] {
+				t.Fatal("removed domain was probed")
+			}
+			after, _ := json.Marshal(&restored)
+			if string(after) != string(raw) {
+				t.Fatal("dry-run changed stored names")
+			}
+		})
 	}
 }

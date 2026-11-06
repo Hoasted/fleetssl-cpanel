@@ -396,6 +396,12 @@ func processRenewalsForAccount(whmCl whm.WhmApi, username string, forceRenewals,
 
 		// process the renewal for the domain on the account
 		cert, result, err := processRenewalForAccountDomain(root, username, group, data, cp, dryRun, forceRenewals, sslHostsUnrevoked)
+		if dryRun && (err != nil || result == ResultRenewalFail || cert == nil) {
+			if err == nil {
+				err = errors.New("Renewal did not return a successful certificate")
+			}
+			return nil, fmt.Errorf("Dry-run failed for %s: %w", root, err)
+		}
 
 		if !dryRun {
 			// If no error was experienced, then we write a fresh RAS
@@ -584,7 +590,7 @@ func processRenewalForAccountDomain(root, username string, group common.DomainLi
 
 	// get the new renewed certificate
 	if newCert == nil {
-		toIssue, checkErr := prepareRenewalCertificate(existingCert, group, func(entry common.DomainEntry) error {
+		toIssue, checkErr := prepareRenewalCertificate(existingCert, group, dryRun, func(entry common.DomainEntry) error {
 			return common.IsDomainAccessible(username, entry, cp)
 		})
 		if checkErr != nil {
@@ -688,8 +694,8 @@ func certificateCoversNames(certPEM string, names []string) bool {
 	return err == nil && common.ArrayProperSubset(common.StripWildcardOverlaps(names), cert.DNSNames)
 }
 
-// Keep the requested names separate from the names that currently pass HTTP DCV.
-func prepareRenewalCertificate(cert *common.NVDataDomainCerts, group common.DomainList,
+// Real renewals may omit failing optional names; dry-runs require every candidate to pass.
+func prepareRenewalCertificate(cert *common.NVDataDomainCerts, group common.DomainList, dryRun bool,
 	check func(common.DomainEntry) error) (*common.NVDataDomainCerts, error) {
 	toIssue := *cert
 	if cert.ChallengeMethod == "dns-01" {
@@ -709,6 +715,9 @@ func prepareRenewalCertificate(cert *common.NVDataDomainCerts, group common.Doma
 			continue
 		}
 		if err := check(entry); err != nil {
+			if dryRun {
+				return nil, fmt.Errorf("Domain %s failed DCV: %w", name, err)
+			}
 			log.WithField("domain", name).WithError(err).Info("Omitting name from renewal because HTTP DCV failed")
 			continue
 		}
