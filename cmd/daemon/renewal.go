@@ -601,6 +601,8 @@ func processRenewalForAccountDomain(root, username string, group common.DomainLi
 		return newCert, ResultRenewalSuccess, nil
 	}
 
+	oldCertID, oldKeyID := existingCert.CertId, existingCert.KeyId
+
 	// install the new certificate
 	// (this is actually feature flagged within the function config.DeferredRestarts)
 	installed, err := installCertNoRestart(cp, root, time.Unix(newCert.CertExpiry, 0), newCert)
@@ -619,11 +621,11 @@ func processRenewalForAccountDomain(root, username string, group common.DomainLi
 	}
 
 	// delete existing cert&key, ignoring any errors
-	if existingCert.CertId != "" {
-		_, _ = cp.DeleteCert(existingCert.CertId)
+	if oldCertID != "" && oldCertID != newCert.CertId {
+		_, _ = cp.DeleteCert(oldCertID)
 	}
-	if existingCert.KeyId != "" {
-		_, _ = cp.DeleteKey(existingCert.KeyId)
+	if oldKeyID != "" && oldKeyID != newCert.KeyId {
+		_, _ = cp.DeleteKey(oldKeyID)
 	}
 
 	var result RenewalResult = ResultRenewalSuccess

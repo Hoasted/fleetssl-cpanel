@@ -9,6 +9,9 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
+	"github.com/letsencrypt-cpanel/cpanelgo"
+	"github.com/letsencrypt-cpanel/cpanelgo/cpanel"
 	"math/big"
 	"reflect"
 	"sort"
@@ -171,5 +174,77 @@ func TestRenewalCandidatesDoNotMutateSavedNames(t *testing.T) {
 	}
 	if candidate == cert || !reflect.DeepEqual(candidate.AltNames, cert.AltNames) || !reflect.DeepEqual(cert.AltNames, []string{"webmail.example.test"}) {
 		t.Fatal("saved names changed while preparing renewal")
+	}
+}
+
+// Embed the interface so any unexpected API call fails the test.
+type renewalGateway struct {
+	cpanelgo.ApiGateway
+	certID, keyID string
+	calls         []string
+}
+
+func (g *renewalGateway) UAPI(module, function string, args cpanelgo.Args, out interface{}) error {
+	g.calls = append(g.calls, function)
+	switch function {
+	case "install_ssl":
+		return json.Unmarshal([]byte(fmt.Sprintf(`{"status":1,"data":{"cert_id":%q,"key_id":%q}}`, g.certID, g.keyID)), out)
+	case "delete_cert", "delete_key":
+		g.calls[len(g.calls)-1] += ":" + args["id"].(string)
+		return json.Unmarshal([]byte(`{"status":1}`), out)
+	default:
+		return fmt.Errorf("unexpected API call: %s.%s", module, function)
+	}
+}
+
+func renewalTestCertificate(t *testing.T, names []string) string {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert := &x509.Certificate{SerialNumber: big.NewInt(42), DNSNames: names, NotAfter: time.Now().Add(365 * 24 * time.Hour)}
+	der, err := x509.CreateCertificate(rand.Reader, cert, cert, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
+}
+
+func TestReusedCertificateCleanup(t *testing.T) {
+	savedConfig := config
+	defer func() { config = savedConfig }()
+	config.DeferredRestarts = false
+	for _, tc := range []struct {
+		name, oldCert, oldKey, newCert, newKey string
+		want                                   []string
+	}{
+		{"changed IDs", "old-cert", "old-key", "new-cert", "new-key", []string{"install_ssl", "delete_cert:old-cert", "delete_key:old-key"}},
+		{"same IDs", "cert", "key", "cert", "key", []string{"install_ssl"}},
+		{"same key", "old-cert", "key", "new-cert", "key", []string{"install_ssl", "delete_cert:old-cert"}},
+		{"empty old IDs", "", "", "new-cert", "new-key", []string{"install_ssl"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := "example.test"
+			cert := &common.NVDataDomainCerts{Domain: root, DomainCert: renewalTestCertificate(t, []string{root}), CertExpiry: time.Now().Add(365 * 24 * time.Hour).Unix(), ChallengeMethod: "dns-01", CertId: tc.oldCert, KeyId: tc.oldKey}
+			data := &common.NVDataAccount{Certs: map[string]*common.NVDataDomainCerts{root: cert}}
+			group := common.DomainList{}
+			group.AddDomain(root, "Main", "/public_html", "test", root)
+			gateway := &renewalGateway{certID: tc.newCert, keyID: tc.newKey}
+			cp := cpanel.CpanelApi{Api: cpanelgo.NewApi(gateway)}
+			resultCert, result, err := processRenewalForAccountDomain(root, "test", group, data, cp, false, false)
+			if err != nil || result != ResultRenewalReinstall {
+				t.Fatalf("result=%v err=%v", result, err)
+			}
+			if !reflect.DeepEqual(gateway.calls, tc.want) {
+				t.Fatalf("calls=%v want=%v", gateway.calls, tc.want)
+			}
+			if resultCert.CertId != tc.newCert || resultCert.KeyId != tc.newKey {
+				t.Fatal("new IDs lost")
+			}
+			if cert.CertId != tc.oldCert || cert.KeyId != tc.oldKey {
+				t.Fatal("saved IDs mutated")
+			}
+		})
 	}
 }
