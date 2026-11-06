@@ -23,7 +23,7 @@ type NVDataDomainCerts struct {
 	KeyId           string            `json:"key_id"`  // the cpanel key_id from install_ssl
 	CertId          string            `json:"cert_id"` // the cpanel cert_id from install_ssl
 	CertExpiry      int64             `json:"cert_expiry"`
-	RenewalNames    []string          `json:"renewal_names,omitempty"` // candidates retained when HTTP DCV temporarily fails
+	RenewalNames    []string          `json:"renewal_names,omitempty"` // candidates retried when the next certificate is issued
 	AltNames        []string          `json:"alt_names"`
 	ChallengeMethod string            `json:"challenge_method"`
 	AlternateChains map[string]string `json:"alternate_chains"` // map of top_issuer -> pem (\n joined)

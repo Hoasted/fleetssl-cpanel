@@ -30,6 +30,8 @@ Useful existing examples in `cmd/daemon/renewal_test.go`:
 - `TestPrepareRenewalCertificate`: inject DCV results, check primary/optional names and round-trip account data through JSON.
 - `TestReusedCertificateCleanup`: use a fake cPanel gateway and assert the actual install/delete calls and IDs.
 - `TestInstalledCertificateSkipsRepeatedInstallation`: check repeated runs and missing installation targets.
+- `TestRenewalEligibilityIgnoresOmittedNames`: verify omitted candidates do not schedule renewal, while expiring or missing issued names still do.
+- `TestHealthyHTTPRenewalDoesNotProbeOmittedNames`: verify healthy certificates and installation repairs avoid HTTP probes.
 - `TestUnchangedCertificateDoesNotSuppressRequiredIssuance`: use a loopback HTTP server to distinguish skipping issuance from entering it.
 
 Use `t.Helper()` for fixture builders, `t.TempDir()` for new temporary-file fixtures, and `t.Cleanup()` to restore changed state. Existing tests change package globals such as configuration, database handles and ACME URLs; restore them and do not use `t.Parallel()` around shared state.
@@ -98,7 +100,7 @@ If shell-based acceptance tests are added, put them under `tests/acceptance/` wi
 3. Create `/etc/letsencrypt-cpanel.use-staging` before starting/restarting the daemon. It selects staging at process startup and applies server-wide. Keep the VM on staging during the tests; staging certificates are not publicly trusted.
 4. Establish a working certificate through the entry point being tested. Manual UI issuance, AutoSSL and renewal are separate paths; do not assume success in one proves the others.
 5. Change one condition at a time, run the action, then inspect the installed certificate, persisted candidate/issued names and external calls. Recheck after a daemon restart when persistence matters.
-6. Test both success and failure, repeated runs, recovery, primary versus optional names, HTTP versus DNS validation, wildcard overlap and missing reuse-target installations as applicable. A stable serial number alone does not prove installation was skipped; inspect API calls or logs too. Per-certificate renewal hooks and the loop-level hook are separate behaviors.
+6. Test both success and failure, repeated runs, recovery, primary versus optional names, HTTP versus DNS validation, wildcard overlap and missing reuse-target installations as applicable. For omitted-name recovery, verify ordinary checks leave a healthy certificate alone and the next actual renewal retries remembered names. A manual new issuance can add a recovered name sooner. A stable serial number alone does not prove installation was skipped; inspect API calls or logs too. Per-certificate renewal hooks and the loop-level hook are separate behaviors.
 7. Repeat the relevant scenarios after an RPM upgrade. Restore the VM snapshot for rollback; restoring only the executable leaves changed account and certificate state behind.
 
 Example renewal commands, run on the dev VM with `LABUSER` and `PUBLIC_TEST_DOMAIN` replaced:

@@ -346,19 +346,11 @@ func processRenewalsForAccount(whmCl whm.WhmApi, username string, forceRenewals,
 
 	// Remove any groups from the map that already have certificates
 	// that are not expiring/expired, not self-signed, and contain
-	// all of the names required by the group
+	// all of the currently issued names still belonging to the group
 	if !forceRenewals && !dryRun {
 		cutoff := time.Now().Add(time.Duration(config.RenewalCountdownDays) * 24 * time.Hour)
 		for rootDomain, group := range groupedDomains {
-			keep := false
-			for _, domain := range group {
-				// We don't have a cert for this SAN, issue!
-				if !sslHostsUnrevoked.HasValidDomain(domain.Domain, cutoff) {
-					keep = true
-				}
-			}
-
-			if !keep {
+			if !renewalRequired(data.Certs[rootDomain], group, sslHostsUnrevoked, cutoff) {
 				delete(groupedDomains, rootDomain)
 			}
 		}
@@ -568,13 +560,6 @@ func processRenewalForAccountDomain(root, username string, group common.DomainLi
 			errors.New("Unable to determine document root for this domain - please re-issue certificate from web interface")
 	}
 
-	toIssue, checkErr := prepareRenewalCertificate(existingCert, group, func(entry common.DomainEntry) error {
-		return common.IsDomainAccessible(username, entry, cp)
-	})
-	if checkErr != nil {
-		return existingCert, ResultRenewalFail, checkErr
-	}
-
 	var newCert *common.NVDataDomainCerts
 
 	// If we already have a valid certificate for this domain, and it's being renewed for some reason,
@@ -586,7 +571,7 @@ func processRenewalForAccountDomain(root, username string, group common.DomainLi
 		// 2. The certificate must not be revoked
 		isRevoked, _ := isCertificateRevokedOCSP(existingCert.DomainCert, existingCert.IssuerCert)
 
-		coversNames := certificateCoversNames(existingCert.DomainCert, append([]string{toIssue.Domain}, toIssue.AltNames...))
+		coversNames := certificateCoversNames(existingCert.DomainCert, issuedRenewalNames(existingCert, group))
 		if hasEnoughValidity && !isRevoked && coversNames {
 			log.WithField("domain", root).Info("Re-using existing certificate in storage, not renewing")
 			newCert = existingCert
@@ -599,6 +584,12 @@ func processRenewalForAccountDomain(root, username string, group common.DomainLi
 
 	// get the new renewed certificate
 	if newCert == nil {
+		toIssue, checkErr := prepareRenewalCertificate(existingCert, group, func(entry common.DomainEntry) error {
+			return common.IsDomainAccessible(username, entry, cp)
+		})
+		if checkErr != nil {
+			return existingCert, ResultRenewalFail, checkErr
+		}
 		newCert, err = getRenewedCert(toIssue, data.AccountKey, username, docroot, cp, dryRun)
 		if err != nil {
 			return existingCert, ResultRenewalFail, fmt.Errorf("Unable to renew certificate: %v", err)
@@ -644,6 +635,26 @@ func processRenewalForAccountDomain(root, username string, group common.DomainLi
 	}
 
 	return newCert, result, nil
+}
+
+func renewalRequired(cert *common.NVDataDomainCerts, group common.DomainList, hosts cpanel.InstalledHostsApiResponse, cutoff time.Time) bool {
+	for _, name := range issuedRenewalNames(cert, group) {
+		if !hosts.HasValidDomain(name, cutoff) {
+			return true
+		}
+	}
+	return false
+}
+
+// Omitted candidates are retried at issuance, not used to schedule renewal or repair.
+func issuedRenewalNames(cert *common.NVDataDomainCerts, group common.DomainList) []string {
+	var names []string
+	for _, name := range append([]string{cert.Domain}, cert.AltNames...) {
+		if _, present := group[name]; present {
+			names = append(names, name)
+		}
+	}
+	return names
 }
 
 // Only skip installation when this exact certificate is already on every target vhost.

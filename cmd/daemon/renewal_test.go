@@ -143,7 +143,7 @@ func TestPrepareRenewalCertificate(t *testing.T) {
 	}
 }
 
-func TestCertificateCoversRenewalNames(t *testing.T) {
+func TestCertificateCoversRequestedNames(t *testing.T) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -158,7 +158,7 @@ func TestCertificateCoversRenewalNames(t *testing.T) {
 		t.Fatal("unchanged passing names should allow reuse")
 	}
 	if certificateCoversNames(certPEM, append(cert.DNSNames, "mail.example.test")) {
-		t.Fatal("recovered mail name must prevent reuse")
+		t.Fatal("missing requested name must prevent reuse")
 	}
 	if certificateCoversNames("invalid PEM", cert.DNSNames) {
 		t.Fatal("invalid certificate must prevent reuse")
@@ -357,12 +357,12 @@ func TestUnchangedCertificateDoesNotSuppressRequiredIssuance(t *testing.T) {
 	defer server.Close()
 	common.BoulderUrl, common.BoulderStagingUrl = server.URL, server.URL
 	for _, tc := range []struct {
-		name                            string
-		force, dry, recovered, expiring bool
-		wantRequests                    int
+		name                                string
+		force, dry, missingIssued, expiring bool
+		wantRequests                        int
 	}{
 		{name: "unchanged"},
-		{name: "recovered name", recovered: true, wantRequests: 1},
+		{name: "missing issued name", missingIssued: true, wantRequests: 1},
 		{name: "forced renewal", force: true, wantRequests: 1},
 		{name: "dry run", dry: true, wantRequests: 1},
 		{name: "expiring certificate", expiring: true, wantRequests: 1},
@@ -376,7 +376,8 @@ func TestUnchangedCertificateDoesNotSuppressRequiredIssuance(t *testing.T) {
 			}
 			group := common.DomainList{}
 			group.AddDomain(root, "Main", "/public_html", "test", root)
-			if tc.recovered {
+			if tc.missingIssued {
+				cert.AltNames = []string{"mail.example.test"}
 				group.AddDomain("mail.example.test", "Alias", "/public_html", "test", root)
 			}
 			data := &common.NVDataAccount{Certs: map[string]*common.NVDataDomainCerts{root: cert}}
@@ -396,5 +397,121 @@ func TestUnchangedCertificateDoesNotSuppressRequiredIssuance(t *testing.T) {
 				t.Fatalf("unexpected cPanel calls: %v", gateway.calls)
 			}
 		})
+	}
+}
+
+func TestIssuedRenewalNamesExcludeOmittedAndRemovedNames(t *testing.T) {
+	cert := &common.NVDataDomainCerts{Domain: "example.test", AltNames: []string{"www.example.test", "removed.test"}, RenewalNames: []string{"mail.example.test", "removed-candidate.test"}}
+	group := common.DomainList{}
+	for _, name := range []string{cert.Domain, "www.example.test", "mail.example.test"} {
+		group.AddDomain(name, "Alias", "/public_html", "test", cert.Domain)
+	}
+	names := issuedRenewalNames(cert, group)
+	if !reflect.DeepEqual(names, []string{cert.Domain, "www.example.test"}) {
+		t.Fatalf("eligibility names=%v", names)
+	}
+	if len(issuedRenewalNames(cert, common.DomainList{})) != 0 {
+		t.Fatal("removed virtual host must have no eligible names")
+	}
+}
+
+func TestHealthyHTTPRenewalDoesNotProbeOmittedNames(t *testing.T) {
+	savedURL := common.BoulderUrl
+	defer func() { common.BoulderUrl = savedURL }()
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		http.Error(w, "unexpected ACME request", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	common.BoulderUrl = server.URL
+	root := "example.test"
+	cert := &common.NVDataDomainCerts{Domain: root, AltNames: []string{"www.example.test"}, RenewalNames: []string{"mail.example.test"}, DomainCert: renewalTestCertificate(t, []string{root, "www.example.test"}), CertExpiry: time.Now().Add(365 * 24 * time.Hour).Unix(), ChallengeMethod: "http-01"}
+	data := &common.NVDataAccount{Certs: map[string]*common.NVDataDomainCerts{root: cert}}
+	domains := common.DomainList{}
+	for _, name := range []string{root, "www.example.test", "mail.example.test"} {
+		domains.AddDomain(name, "Alias", "/public_html", "test", root)
+	}
+	grouped, _, err := common.GroupNVDataDomains(data.Certs, domains)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := grouped[root]["mail.example.test"]; !ok {
+		t.Fatal("omitted name was forgotten")
+	}
+	hosts := cpanel.InstalledHostsApiResponse{Data: []cpanel.InstalledCertificate{{CertificateText: cert.DomainCert, FQDNs: []string{root}}}}
+	gateway := &renewalGateway{certID: "installed-cert", keyID: "installed-key"}
+	cp := cpanel.CpanelApi{Api: cpanelgo.NewApi(gateway)}
+	for i := 0; i < 2; i++ {
+		_, result, err := processRenewalForAccountDomain(root, "no-such-test-user", grouped[root], data, cp, false, false, hosts)
+		if err != nil || result != ResultRenewalUnchanged {
+			t.Fatalf("run=%d result=%v err=%v", i, result, err)
+		}
+	}
+	if requests.Load() != 0 || len(gateway.calls) != 0 {
+		t.Fatalf("unexpected work: ACME=%d cPanel=%v", requests.Load(), gateway.calls)
+	}
+	// Repairing a missing installation must reuse the certificate without HTTP probes too.
+	_, result, err := processRenewalForAccountDomain(root, "no-such-test-user", grouped[root], data, cp, false, false, cpanel.InstalledHostsApiResponse{})
+	if err != nil || result != ResultRenewalReinstall {
+		t.Fatalf("repair: result=%v err=%v", result, err)
+	}
+	if requests.Load() != 0 || !reflect.DeepEqual(gateway.calls, []string{"install_ssl"}) {
+		t.Fatalf("repair: ACME=%d cPanel=%v", requests.Load(), gateway.calls)
+	}
+	if !reflect.DeepEqual(cert.RenewalNames, []string{"mail.example.test"}) {
+		t.Fatal("omitted names changed during skipped renewal")
+	}
+}
+
+func TestRenewalEligibilityIgnoresOmittedNames(t *testing.T) {
+	now := time.Now()
+	cutoff := now.Add(32 * 24 * time.Hour)
+	cert := &common.NVDataDomainCerts{Domain: "example.test", AltNames: []string{"www.example.test"}, RenewalNames: []string{"mail.example.test"}}
+	domains := common.DomainList{}
+	for _, name := range []string{cert.Domain, "www.example.test", "mail.example.test"} {
+		domains.AddDomain(name, "Alias", "/public_html", "test", cert.Domain)
+	}
+	grouped, _, err := common.GroupNVDataDomains(map[string]*common.NVDataDomainCerts{cert.Domain: cert}, domains)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name       string
+		names      []string
+		expiry     time.Time
+		selfSigned bool
+		want       bool
+	}{
+		{"healthy issued names missing remembered name", []string{cert.Domain, "www.example.test"}, now.Add(90 * 24 * time.Hour), false, false},
+		{"expiring issued certificate", []string{cert.Domain, "www.example.test"}, now.Add(10 * 24 * time.Hour), false, true},
+		{"missing issued name", []string{cert.Domain}, now.Add(90 * 24 * time.Hour), false, true},
+		{"self signed certificate", []string{cert.Domain, "www.example.test"}, now.Add(90 * 24 * time.Hour), true, true},
+		{"no installation", nil, now.Add(90 * 24 * time.Hour), false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			host := cpanel.InstalledCertificate{}
+			host.Certificate.Domains = tc.names
+			host.Certificate.NotAfter = cpanelgo.MaybeInt64(tc.expiry.Unix())
+			if tc.selfSigned {
+				host.Certificate.IsSelfSigned = 1
+			}
+			hosts := cpanel.InstalledHostsApiResponse{Data: []cpanel.InstalledCertificate{host}}
+			if got := renewalRequired(cert, grouped[cert.Domain], hosts, cutoff); got != tc.want {
+				t.Fatalf("required=%v want=%v", got, tc.want)
+			}
+		})
+	}
+	// Removing an issued alias from cPanel must not cause repair of that removed alias.
+	domains.RemoveDomain("www.example.test")
+	grouped, _, err = common.GroupNVDataDomains(map[string]*common.NVDataDomainCerts{cert.Domain: cert}, domains)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := cpanel.InstalledCertificate{}
+	host.Certificate.Domains = []string{cert.Domain}
+	host.Certificate.NotAfter = cpanelgo.MaybeInt64(now.Add(90 * 24 * time.Hour).Unix())
+	if renewalRequired(cert, grouped[cert.Domain], cpanel.InstalledHostsApiResponse{Data: []cpanel.InstalledCertificate{host}}, cutoff) {
+		t.Fatal("removed alias or remembered name triggered renewal")
 	}
 }
