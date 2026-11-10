@@ -4,23 +4,31 @@ on:
   workflow_dispatch:
 
 jobs:
+  tests:
+    uses: ./.github/workflows/tests.yml
+    permissions:
+      contents: read
+
   build:
+    needs: tests
     name: Build Docker Containers
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
       - run: sudo apt-get -y install make
-      - uses: docker/setup-buildx-action@v2
 
       - run: make docker-build-setup
       - run: make docker-build
 
-      - run: echo "PLUGIN_VERSION=$(cat VERSION)-$(cat ITERATION)" >> $GITHUB_ENV
+      - run: echo "PLUGIN_VERSION=$(cat VERSION)-$(cat ITERATION)" >> "$GITHUB_ENV"
 
-      - uses: softprops/action-gh-release@v1
+      - uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
           name: letsencrypt-cpanel-${{ env.PLUGIN_VERSION }}
           tag_name: ${{ env.PLUGIN_VERSION }}
+          target_commitish: ${{ github.sha }}
           fail_on_unmatched_files: true
 
           files: |

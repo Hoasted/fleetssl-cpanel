@@ -192,7 +192,9 @@ func GroupNVDataDomains(certs map[string]*NVDataDomainCerts, allDomains DomainLi
 	var leftovers []string
 
 	for root, cert := range certs {
-		list, lo, err := GroupDomains(append(cert.AltNames, cert.Domain), allDomains, root)
+		names := append([]string{cert.Domain}, cert.AltNames...)
+		names = append(names, cert.RenewalNames...)
+		list, lo, err := GroupDomains(names, allDomains, root)
 		if err != nil {
 			return grouped, leftovers, err
 		}
@@ -207,20 +209,40 @@ func GroupNVDataDomains(certs map[string]*NVDataDomainCerts, allDomains DomainLi
 	return grouped, leftovers, nil
 }
 
+var (
+	dnsLookupAttempts   = 3
+	dnsLookupRetryDelay = 2 * time.Second
+	resolveIterative    = func(name string) dnsr.RRs {
+		return dnsr.NewWithTimeout(1000, 10*time.Second).Resolve(name, "")
+	}
+)
+
+// hasAddressRecord reports whether rrs contain CNAME, A, or AAAA
+// (SOA/NS alone is a false positive).
+func hasAddressRecord(rrs dnsr.RRs) bool {
+	for _, rr := range rrs {
+		if rr.Type == "A" || rr.Type == "AAAA" || rr.Type == "CNAME" {
+			return true
+		}
+	}
+	return false
+}
+
 func IsDomainAccessible(username string, domain DomainEntry, cp cpanel.CpanelApi) error {
 	// First we check if the domain is registered, e.g. we can
 	// get any records using iterative dns from the root servers
-	r := dnsr.NewWithTimeout(1000, 10*time.Second)
-	rrs := r.Resolve(domain.Domain, "")
-	// RRs must contain CNAME, A, or AAAA (sometimes we might get SOA/NS which is a false positive)
+	// A single iterative walk can transiently return nothing (lost UDP
+	// packet, slow nameserver). Renewal omits names that fail here, so a
+	// blip would drop a working name until the next renewal: retry first.
 	resolveable := false
-	for _, rr := range rrs {
-		if rr.Type == "A" || rr.Type == "AAAA" || rr.Type == "CNAME" {
-			resolveable = true
+	for attempt := 0; attempt < dnsLookupAttempts && !resolveable; attempt++ {
+		if attempt > 0 {
+			time.Sleep(dnsLookupRetryDelay)
 		}
+		resolveable = hasAddressRecord(resolveIterative(domain.Domain))
 	}
 	if !resolveable {
-		return fmt.Errorf("Iterative DNS lookup for %s gave no results", domain.Domain)
+		return fmt.Errorf("Iterative DNS lookup for %s gave no results after %d attempts", domain.Domain, dnsLookupAttempts)
 	}
 
 	fn := fmt.Sprintf("plugin-test-%d", time.Now().UnixNano())
