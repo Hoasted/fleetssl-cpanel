@@ -172,8 +172,10 @@ func gatherAccessibleDomains(username string, cp cpanel.CpanelApi,
 		// If the domain root doesnt pass, then we ignore all other domains
 		// under the same virtualhost
 		if workingDomainRoots[v.DomainRoot] == false {
-			debug[v.Domain] = fmt.Sprintf("Excluded domain because its associated " +
-				" virtual host root did not pass DCV tests")
+			// Keep the root's own DCV error in debug output instead of overwriting it.
+			if v.Domain != v.DomainRoot {
+				debug[v.Domain] = "Excluded domain because its associated virtual host root did not pass DCV tests"
+			}
 			skip = true
 		}
 

@@ -245,7 +245,14 @@ func checkUrl(url, expectedContents string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	resp, err := ctxhttp.Get(ctx, http.DefaultClient, url)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	// Go's default User-Agent is blocked (HTTP 402) by Hoasted's per-package bot policy.
+	req.Header.Set("User-Agent", "fleetssl-cpanel/"+AppVersion)
+
+	resp, err := ctxhttp.Do(ctx, http.DefaultClient, req)
 	if err != nil {
 		return err
 	}
